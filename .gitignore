@@ -19,5 +19,4 @@ htmlcov/
 .pytest_cache/
 
 # Development
-docs/
 skills_creator.md
