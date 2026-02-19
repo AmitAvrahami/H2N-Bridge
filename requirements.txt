@@ -1,0 +1,16 @@
+faster-whisper
+sounddevice
+numpy
+pynput
+groq
+pyperclip
+PyQt6==6.10.2
+PyQt6-Qt6==6.10.2
+python-dotenv
+requests
+
+# ── Test dependencies ──────────────────────────────────────────
+pytest>=7.4
+pytest-qt>=4.4
+pytest-cov>=4.1
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
