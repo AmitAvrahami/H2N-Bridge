@@ -1,0 +1,7 @@
+{
+    "shortcuts": {
+        "translation_trigger": "<ctrl>+k",
+        "app_exit": "<ctrl>+q",
+        "app_launch": "<ctrl>+l"
+    }
+}
