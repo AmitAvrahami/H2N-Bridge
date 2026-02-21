@@ -9,36 +9,62 @@ main Qt thread.  The pynput hotkey fires on a daemon thread, so it
 only emits a thread-safe pyqtSignal which is handled on the main
 thread via a queued connection.
 """
+import multiprocessing
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
 
 # ── Early Qt plugin setup (MUST happen before any PyQt6 import) ──────
-# macOS SIP strips DYLD_* and sometimes QT_PLUGIN_PATH from child
-# processes.  Setting it via os.environ in Python bypasses that.
-import os, pathlib
-_this_dir = pathlib.Path(__file__).resolve().parent.parent.parent        # project root
-_plugin_dir = (
-    _this_dir / ".venv311" / "lib" / "python3.11" / "site-packages"
-    / "PyQt6" / "Qt6" / "plugins"
-)
-if _plugin_dir.is_dir():
-    os.environ.setdefault("QT_PLUGIN_PATH", str(_plugin_dir))
+# ── Early Qt plugin setup (MUST happen before any PyQt6 import) ──────
+# The explicit os.environ override causes Qt to fail to find plugins (reports 'in ""') 
+# due to macOS C-level mismatch. PyQt6 will automatically resolve plugins via its site-packages default.
+import os
+
 os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
+
 
 # ─────────────────────────────────────────────────────────────────────
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
 from h2n_bridge.ui.overlay import Overlay, SignalHandler
+from h2n_bridge.ui.settings import SettingsWindow
 from h2n_bridge.components.audio import AudioRecorder
 from h2n_bridge.components.transcriber import FasterTranscriber
 from h2n_bridge.components.translator import Translator
 from h2n_bridge.components.output import OutputHandler
-from h2n_bridge.config import HOTKEY, WHISPER_MODEL_SIZE
-from pynput import keyboard as pynput_keyboard # Keep this import style
+from h2n_bridge.components.shortcut_manager import ShortcutManager
+from h2n_bridge.config import WHISPER_MODEL_SIZE
 import threading
 import time
 import sys
 import numpy as np
 
+# Let's explicitly set the Qt library path to bypass macOS SIP restrictions
+def setup_qt_and_diagnose():
+    from PyQt6.QtCore import QCoreApplication
+    import os
+    import pathlib
+
+    _this_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+    _plugin_dir = (
+        _this_dir / ".venv311" / "lib" / "python3.11" / "site-packages"
+        / "PyQt6" / "Qt6" / "plugins"
+    )
+
+    print(f"--- Qt Setup ---", flush=True)
+    if _plugin_dir.is_dir():
+        print(f"Found Qt plugin dir: {_plugin_dir}", flush=True)
+        # Directly tell the C++ Qt runtime where the plugins are!
+        QCoreApplication.addLibraryPath(str(_plugin_dir))
+    else:
+        print(f"Warning: Qt plugin dir not found at {_plugin_dir}", flush=True)
+
+    app = QCoreApplication.instance() or QApplication(sys.argv)
+    print(f"Qt library paths: {app.libraryPaths()}", flush=True)
+    print(f"----------------------", flush=True)
+    return app
 
 # ────────────────────────  Worker (QThread)  ─────────────────────────
 class Worker(QObject):
@@ -89,10 +115,12 @@ class Worker(QObject):
 class HotkeyBridge(QObject):
     """
     Tiny QObject that lives on the main thread.
-    The pynput daemon thread emits `triggered`, and because of Qt's
-    automatic queued-connection the slot runs on the main thread.
+    The pynput daemon thread emits signals, and because of Qt's
+    automatic queued-connection the slots run on the main thread.
     """
-    triggered = pyqtSignal()
+    translation_triggered = pyqtSignal()
+    settings_triggered = pyqtSignal()
+    exit_triggered = pyqtSignal()
 
 
 # ────────────────────  Application Controller  ──────────────────────
@@ -130,45 +158,59 @@ class AppController:
         self._level_timer.setInterval(30)   # ~33 fps
         self._level_timer.timeout.connect(self._pump_amplitude)
 
+        # ── Shortcut Manager (handles daemon thread) ──
+        self.shortcut_manager = ShortcutManager()
+        
+        # ── Safe Main Thread Restarter for Shortcuts ──
+        self._shortcut_restart_timer = QTimer()
+        self._shortcut_restart_timer.setInterval(300)
+        self._shortcut_restart_timer.timeout.connect(self._check_shortcut_restart)
+        self._shortcut_restart_timer.start()
+        
         # ── Hotkey bridge: daemon thread → main thread ──
-        # The hotkey bridge receives signals from the background thread and forwards them
-        # to the main thread via Qt's queued connection mechanism.
         self._hotkey_bridge = HotkeyBridge()
-        self._hotkey_bridge.triggered.connect(self._on_hotkey_main_thread)
+        self._hotkey_bridge.translation_triggered.connect(self._on_hotkey_main_thread)
+        self._hotkey_bridge.settings_triggered.connect(self._toggle_settings)
+        self._hotkey_bridge.exit_triggered.connect(QApplication.instance().quit)
 
-        # ── Start pynput listener (daemon thread) ──
-        self._listener_thread = threading.Thread(
-            target=self._start_listener, daemon=True
+        # Register callbacks to bridge
+        self.shortcut_manager.register_callback(
+            "translation_trigger", self._hotkey_bridge.translation_triggered.emit
         )
-        self._listener_thread.start()
+        self.shortcut_manager.register_callback(
+            "app_launch", self._hotkey_bridge.settings_triggered.emit
+        )
+        self.shortcut_manager.register_callback(
+            "app_exit", self._hotkey_bridge.exit_triggered.emit
+        )
 
-        print(f"App Ready. Press '{HOTKEY}' to record.", flush=True)
+        # Start listening
+        self.shortcut_manager.start_listener()
+        
+        # ── Settings UI ──
+        self.settings_window = SettingsWindow(self.shortcut_manager)
+
+        print(f"App Ready. Configured shortcuts: {self.shortcut_manager.shortcuts}", flush=True)
+
+    def _toggle_settings(self):
+        """Shows/hides the settings window."""
+        if self.settings_window.isVisible():
+            self.settings_window.hide()
+        else:
+            self.settings_window.show()
+            self.settings_window.activateWindow()
+            self.settings_window.raise_()
 
     # ─────────────────────────────────────────────────────────────────
     #  Hotkey listener (runs on daemon thread)
     # ─────────────────────────────────────────────────────────────────
-    def _start_listener(self):
-        """
-        # Starts the pynput GlobalHotKeys listener on a daemon thread.
-        # This listener emits a signal to the main thread via HotkeyBridge.
-        """
-        target_hotkey = (
-            HOTKEY.lower()
-            .replace("ctrl", "<ctrl>")
-            .replace("shift", "<shift>")
-            .replace("alt", "<alt>")
-            .replace("cmd", "<cmd>")
-            .replace("command", "<cmd>")
-        )
+    # Removed _start_listener as it's handled by ShortcutManager
 
-        def on_activate():
-            # ONLY emit a signal — do NOT touch any QObject directly
-            self._hotkey_bridge.triggered.emit()
-
-        with pynput_keyboard.GlobalHotKeys(
-            {target_hotkey: on_activate}
-        ) as listener:
-            listener.join()
+    def _check_shortcut_restart(self):
+        """Polls shortcut manager for a pending restart request (must run on main thread)."""
+        if getattr(self.shortcut_manager, '_pending_restart', False):
+            self.shortcut_manager._pending_restart = False
+            self.shortcut_manager.restart_listener()
 
     # ─────────────────────────────────────────────────────────────────
     #  Main-thread slot — safe for all Qt operations
@@ -333,7 +375,7 @@ class AppController:
 
 # ─────────────────────────  Entry Point  ─────────────────────────────
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    app = setup_qt_and_diagnose()
     
     # Ensure app doesn't quit when overlay hides
     app.setQuitOnLastWindowClosed(False)
