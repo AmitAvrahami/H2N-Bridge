@@ -229,33 +229,35 @@ class TestOverlayStateMachine:
     def test_ui_state_transitions(self, qtbot, overlay, signal_handler):
         """
         Comprehensive state-machine transition test:
-        LISTENING → label "Translating…"
-        PROCESSING → label "Processing…"
-        COMPLETED → label "Finished"
+        LISTENING → label "דבר עכשיו"
+        PROCESSING → label "מעבד…"
+        COMPLETED → label "סיום"
         """
         from h2n_bridge.ui.overlay import OverlayState
 
         # → LISTENING
         signal_handler.set_state.emit("listening")
         qtbot.wait(50)
-        assert overlay._label.text() == "Translating…", (
-            f"Expected 'Translating…' in LISTENING state, got '{overlay._label.text()}'"
+        assert overlay._label == "דבר עכשיו", (
+            f"Expected 'דבר עכשיו' in LISTENING state, got '{overlay._label}'"
         )
         assert overlay._state == OverlayState.LISTENING
+        # In listening we fade in
+        assert overlay.windowOpacity() > 0 or overlay.isVisible()
 
         # → PROCESSING
         signal_handler.set_state.emit("processing")
         qtbot.wait(50)
-        assert overlay._label.text() == "Processing…", (
-            f"Expected 'Processing…' in PROCESSING state, got '{overlay._label.text()}'"
+        assert overlay._label == "מעבד…", (
+            f"Expected 'מעבד…' in PROCESSING state, got '{overlay._label}'"
         )
         assert overlay._state == OverlayState.PROCESSING
 
         # → COMPLETED
         signal_handler.set_state.emit("completed")
         qtbot.wait(50)
-        assert overlay._label.text() == "Finished", (
-            f"Expected 'Finished' in COMPLETED state, got '{overlay._label.text()}'"
+        assert overlay._label == "סיום", (
+            f"Expected 'סיום' in COMPLETED state, got '{overlay._label}'"
         )
         assert overlay._state == OverlayState.COMPLETED
 
@@ -273,48 +275,47 @@ class TestOverlayStateMachine:
         """update_text signal updates the main label text."""
         signal_handler.update_text.emit("Custom status message")
         qtbot.wait(30)
-        assert overlay._label.text() == "Custom status message"
+        assert overlay._label == "Custom status message"
 
     def test_set_amplitude_calls_waveform(self, qtbot, overlay, signal_handler):
-        """set_amplitude signal feeds the waveform widget without errors."""
+        """set_amplitude signal sets the internal amplitude without errors."""
         signal_handler.set_amplitude.emit(0.75)
         qtbot.wait(30)
-        # Amplitude is clamped to [0, 1]; no exception = pass
-        assert overlay._waveform._amplitude == pytest.approx(0.75, abs=0.01)
+        # Amplitude is clamped to [0, 1]
+        assert overlay._amplitude == pytest.approx(0.75, abs=0.01)
 
     def test_set_amplitude_clamped(self, qtbot, overlay, signal_handler):
         """Amplitude values > 1.0 or < 0.0 are clamped safely."""
         signal_handler.set_amplitude.emit(5.0)
         qtbot.wait(30)
-        assert overlay._waveform._amplitude <= 1.0
+        assert overlay._amplitude <= 1.0
 
         signal_handler.set_amplitude.emit(-1.0)
         qtbot.wait(30)
-        assert overlay._waveform._amplitude >= 0.0
+        assert overlay._amplitude >= 0.0
 
-    def test_listening_shows_waveform_hides_shimmer(self, qtbot, overlay, signal_handler):
-        """In LISTENING state, waveform is visible and shimmer is hidden."""
+    def test_listening_resets_shimmer_and_check(self, qtbot, overlay, signal_handler):
+        """In LISTENING state, progress variables are reset."""
+        overlay._check_prog = 1.0
+        overlay._shimmer_x = 1.0
         signal_handler.set_state.emit("listening")
         qtbot.wait(50)
-        assert overlay._waveform.isVisible()
-        assert not overlay._shimmer.isVisible()
+        assert overlay._check_prog == 0.0
+        assert overlay._shimmer_x == -0.3
 
-    def test_processing_shows_shimmer_hides_waveform(self, qtbot, overlay, signal_handler):
-        """In PROCESSING state, shimmer widget is not hidden; waveform widget is hidden."""
-        # Show the overlay first so child isVisible() checks work correctly
-        signal_handler.show_window.emit()
+    def test_processing_advances_shimmer(self, qtbot, overlay, signal_handler):
+        """In PROCESSING state, the shimmer ticking advances _shimmer_x."""
         signal_handler.set_state.emit("processing")
-        qtbot.wait(50)
-        # Use isHidden() which reflects the widget's own hidden flag, independent of parent
-        assert not overlay._shimmer.isHidden(), "Shimmer should not be hidden in PROCESSING state"
-        assert overlay._waveform.isHidden(), "Waveform should be hidden in PROCESSING state"
+        initial_shimmer = overlay._shimmer_x
+        qtbot.wait(100) # wait for a few ticks
+        assert overlay._shimmer_x > initial_shimmer
 
-    def test_completed_shows_checkmark(self, qtbot, overlay, signal_handler):
-        """In COMPLETED state, the check_container widget is not hidden."""
-        signal_handler.show_window.emit()
+    def test_completed_advances_checkmark(self, qtbot, overlay, signal_handler):
+        """In COMPLETED state, the checkmark tracking variable advances."""
         signal_handler.set_state.emit("completed")
-        qtbot.wait(50)
-        assert not overlay._check_container.isHidden(), "check_container should not be hidden in COMPLETED state"
+        initial_check = overlay._check_prog
+        qtbot.wait(100) # wait for a few ticks
+        assert overlay._check_prog > initial_check
 
     def test_unknown_state_name_does_not_crash(self, qtbot, overlay, signal_handler):
         """An unrecognised state name must not raise — falls back to HIDDEN."""

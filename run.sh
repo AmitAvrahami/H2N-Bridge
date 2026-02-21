@@ -17,13 +17,13 @@ PLUGINS="$DIR/.venv311/lib/python3.11/site-packages/PyQt6/Qt6/plugins"
 # Export environment variables to help PyQt6 find its plugins.
 # QT_PLUGIN_PATH points to the plugins root; Qt appends /platforms internally.
 # Note: DYLD_FRAMEWORK_PATH is stripped by macOS SIP for child processes, so we omit it.
-export QT_PLUGIN_PATH="$PLUGINS"
+# export QT_PLUGIN_PATH="$PLUGINS"
 export QT_MAC_WANTS_LAYER=1       # Required for CALayer-backed views on macOS 13+
 export PYTHONPATH="$DIR:$DIR/src"
 
 echo "Starting H2N Bridge..."
 if [ -z "$1" ]; then
-    "$DIR/.venv311/bin/python" -m h2n_bridge.main
+    TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=1 "$DIR/.venv311/bin/python" -m h2n_bridge.main
 else
     # Check if the argument is a file or a module
     if [[ "$1" == *.py ]]; then

@@ -15,6 +15,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Add the src directory to the python path so tests can find h2n_bridge
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stub out hardware / cloud dependencies BEFORE any src.* import
 # ─────────────────────────────────────────────────────────────────────────────
