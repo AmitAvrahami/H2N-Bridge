@@ -2,6 +2,6 @@
   "shortcuts": {
     "translation_trigger": "<ctrl>+k",
     "app_exit": "<ctrl>+q",
-    "app_launch": "<shift>+w"
+    "app_launch": "<shift>+a"
   }
 }

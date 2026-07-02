@@ -47,11 +47,17 @@ def setup_qt_and_diagnose():
     import os
     import pathlib
 
-    _this_dir = pathlib.Path(__file__).resolve().parent.parent.parent
-    _plugin_dir = (
-        _this_dir / ".venv311" / "lib" / "python3.11" / "site-packages"
-        / "PyQt6" / "Qt6" / "plugins"
-    )
+    try:
+        import PyQt6
+        # Dynamically find the plugin directory relative to the PyQt6 package
+        _plugin_dir = pathlib.Path(PyQt6.__file__).resolve().parent / "Qt6" / "plugins"
+    except ImportError:
+        # Fallback to the old hardcoded path if PyQt6 is not importable directly here for some reason
+        _this_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+        _plugin_dir = (
+            _this_dir / ".venv311" / "lib" / "python3.11" / "site-packages"
+            / "PyQt6" / "Qt6" / "plugins"
+        )
 
     print(f"--- Qt Setup ---", flush=True)
     if _plugin_dir.is_dir():
